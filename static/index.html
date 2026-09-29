@@ -1,11 +1,104 @@
 <!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>矿井应急避险与通风协调</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}main{max-width:860px;margin:auto}pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto}button{padding:.5rem .8rem;cursor:pointer}</style></head>
-<body><main><h1>矿井应急避险与通风协调</h1><p>这是最小演示页面，主要操作通过JSON API完成。</p><p><button onclick="checkHealth()">检查服务状态</button></p><pre id="result">等待操作</pre>
-<h2>常用接口</h2><pre>GET  /health
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}
+main{max-width:960px;margin:auto}
+pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto}
+button{padding:.5rem .8rem;cursor:pointer;margin-right:.4rem}
+input{padding:.4rem;margin-right:.4rem}
+table{border-collapse:collapse;width:100%;margin:.6rem 0}
+th,td{border:1px solid #d1d5db;padding:.45rem .6rem;text-align:left;font-size:.9rem}
+th{background:#f9fafb}
+.pending{color:#b45309;font-weight:600}
+.done{color:#047857;font-weight:600}
+.muted{color:#6b7280}
+.card{border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin:1rem 0}
+</style></head>
+<body><main>
+<h1>矿井应急避险与通风协调</h1>
+<p>气体报警后生成联动单：沿可用通道找出受影响区域，依次隔离通道、启动应急风机、占用避险硐室、给失联人员派单。设备状态或容量不满足的步骤留在待处理，重试不重复执行已完成步骤。</p>
+<p><button onclick="checkHealth()">检查服务状态</button></p>
+<pre id="result">等待操作</pre>
+
+<div class="card">
+<h2>报警联动</h2>
+<p>输入报警传感器ID（或直接输入污染区域编码）：</p>
+<input id="sensorId" placeholder="传感器ID，如 sensor-1" style="width:220px">
+<input id="areaCode" placeholder="或区域编码，如 M-01" style="width:180px">
+<button onclick="activate()">启动报警联动</button>
+<div id="alarmResult"></div>
+</div>
+
+<div class="card">
+<h2>联动单列表</h2>
+<button onclick="loadOrders()">刷新联动单</button>
+<div id="orders"></div>
+</div>
+
+<h2>常用接口</h2>
+<pre>GET  /health
 GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
+POST /api/coordination-orders   {"sensor_id":"..."} 或 {"area_code":"..."}
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre></main>
-<script>async function checkHealth(){const r=await fetch('/health');document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+POST /api/entities/&lt;id&gt;/actions  {"action":"process"|"cancel"}</pre>
+</main>
+<script>
+async function checkHealth(){
+  const r=await fetch('/health');
+  document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2);
+}
+function stepTypeName(t){return {isolate:'隔离通道',fan:'启动风机',refuge:'占用硐室',task:'人员派单'}[t]||t}
+function statusBadge(s){return s==='done'?'<span class="done">已完成</span>':s==='pending'?'<span class="pending">待处理</span>':s}
+function renderSteps(order){
+  const rows=(order.data.steps||[]).map(s=>`<tr>
+    <td>${stepTypeName(s.type)}</td>
+    <td>${s.target||'-'}</td>
+    <td>${statusBadge(s.status)}</td>
+    <td>${s.executor||'<span class="muted">-</span>'}</td>
+    <td>${s.executed_at||'<span class="muted">-</span>'}</td>
+    <td>${s.message||''}</td></tr>`).join('');
+  return `<table><thead><tr><th>步骤</th><th>对象</th><th>状态</th><th>执行人</th><th>执行时间</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function renderOrderCard(o){
+  const areas=(o.data.affected_areas||[]).join('、');
+  return `<div class="card">
+    <h3>联动单 ${o.id} <span class="muted">(${o.status})</span></h3>
+    <p>事件：${o.data.incident_id}　污染区域：${o.data.area_code}　受影响区域：${areas}</p>
+    ${renderSteps(o)}
+    <button onclick="processOrder('${o.id}')">重试执行</button>
+    <button onclick="cancelOrder('${o.id}')">取消联动单</button>
+    </div>`;
+}
+async function activate(){
+  const sensorId=document.getElementById('sensorId').value.trim();
+  const areaCode=document.getElementById('areaCode').value.trim();
+  const body=sensorId?{sensor_id:sensorId}:{area_code:areaCode};
+  const r=await fetch('/api/coordination-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await r.json();
+  if(data.error){document.getElementById('alarmResult').textContent=data.error;return;}
+  document.getElementById('alarmResult').innerHTML=
+    `<p class="muted">${data.duplicate?'重复报警，返回原单':'已新建联动单'}</p>`+renderOrderCard(data.order);
+  loadOrders();
+}
+async function processOrder(id){
+  const r=await fetch('/api/entities/'+id+'/actions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'process'})});
+  const o=await r.json();
+  if(o.error){alert(o.error);return;}
+  loadOrders();
+}
+async function cancelOrder(id){
+  const reason=prompt('取消原因：')||'manual cancel';
+  const r=await fetch('/api/entities/'+id+'/actions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',data:{reason:reason}})});
+  const o=await r.json();
+  if(o.error){alert(o.error);return;}
+  loadOrders();
+}
+async function loadOrders(){
+  const r=await fetch('/api/coordination-orders');
+  const data=await r.json();
+  const items=data.items||[];
+  document.getElementById('orders').innerHTML=items.length?items.map(renderOrderCard).join(''):'<p class="muted">暂无联动单</p>';
+}
+loadOrders();
+</script></body></html>

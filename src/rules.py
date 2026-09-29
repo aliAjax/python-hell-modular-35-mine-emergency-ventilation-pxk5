@@ -102,6 +102,13 @@ def _close_incident(actor, entity, data, lookup):
         raise ConflictError("cannot close incident while tasks remain active")
     if [v for v in _all(lookup, "ventilation") if v["status"] != "running"]:
         raise ConflictError("cannot close incident until ventilation is restored")
+    orders = [
+        o for o in _all(lookup, "coordination_order")
+        if o["data"].get("incident_id") == entity["id"]
+    ]
+    for order in orders:
+        if order["status"] not in ("completed", "cancelled"):
+            raise ConflictError("cannot close incident while coordination order is active")
     return {"closed_by": actor.user_id}
 
 
@@ -110,11 +117,14 @@ class RuleEngine:
         "workers": "worker", "sensors": "sensor", "ventilations": "ventilation",
         "passages": "passage", "refuges": "refuge", "incidents": "incident",
         "tasks": "task", "offline-records": "offline_record", "offline_records": "offline_record",
+        "coordination-orders": "coordination_order", "coordination_orders": "coordination_order",
+        "orders": "coordination_order",
     }
     INITIAL_STATUS = {
         "worker": "active", "sensor": "normal", "ventilation": "running",
         "passage": "open", "refuge": "available", "incident": "detected",
         "task": "proposed", "offline_record": "merged",
+        "coordination_order": "active",
     }
     TRANSITIONS = {
         "worker": {
@@ -136,6 +146,8 @@ class RuleEngine:
             "degrade": (("running",), "degraded"),
             "stop": (("running", "degraded"), "stopped"),
             "restore": (("stopped", "degraded"), "running"),
+            "report_fault": (("running", "degraded", "stopped"), "faulty"),
+            "repair": (("faulty",), "stopped"),
         },
         "passage": {
             "restrict": (("open",), "restricted"),
@@ -162,6 +174,9 @@ class RuleEngine:
             "complete": (("in_progress",), "completed"),
             "cancel": (("proposed", "assigned", "in_progress"), "cancelled"),
         },
+        "coordination_order": {
+            "cancel": (("active",), "cancelled"),
+        },
     }
     CREATE_REQUIRED = {
         "worker": ("name", "location_code", "team"),
@@ -172,6 +187,7 @@ class RuleEngine:
         "incident": ("area_code", "severity", "summary"),
         "task": ("incident_id", "task_type", "target", "dedupe_key"),
         "offline_record": ("source_id", "record_id", "recorded_at", "payload"),
+        "coordination_order": ("incident_id", "area_code"),
     }
     ACTION_REQUIRED = {
         ("worker", "rescue"): ("incident_id",),
@@ -191,6 +207,7 @@ class RuleEngine:
         "incident": ("admin", "safety", "dispatcher"),
         "task": ("admin", "dispatcher", "safety"),
         "offline_record": ("admin", "safety", "dispatcher", "field"),
+        "coordination_order": ("admin", "dispatcher", "safety"),
     }
     ROLE_ACTIONS = {
         "mark_missing": ("admin", "safety", "dispatcher"),
@@ -207,6 +224,8 @@ class RuleEngine:
         "degrade": ("admin", "safety"),
         "stop": ("admin", "safety"),
         "restore": ("admin", "safety"),
+        "report_fault": ("admin", "safety"),
+        "repair": ("admin", "safety"),
         "restrict": ("admin", "safety", "field"),
         "block": ("admin", "safety", "field"),
         "clear": ("admin", "safety", "field"),

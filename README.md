@@ -31,6 +31,7 @@ curl http://127.0.0.1:8335/health
 - `GET /health`：健康检查。
 - `GET /api/<kind>`：按对象类型查询，可用`?status=`过滤。
 - `POST /api/<kind>`：创建对象；请求体为JSON。
+- `POST /api/coordination-orders`：气体报警联动，请求体 `{"sensor_id":"..."}` 或 `{"area_code":"..."}`。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
 - `GET /api/audit`：读取审计记录。
@@ -39,11 +40,25 @@ curl http://127.0.0.1:8335/health
 
 创建矿井事件、人员和设备记录后，依次执行撤离、搜救、通风恢复和事件关闭。`POST /api/offline-records` 用于合并现场离线记录，`source_id + record_id` 相同会幂等返回原记录。
 
+## 报警联动单
+
+气体报警后，调度员不再手工逐项停风机、封通道、找硐室和派单。`POST /api/coordination-orders` 传入 `sensor_id`（或 `area_code`）即触发联动：
+
+1. 按**事件 + 污染区域**查找或新建一张联动单，重复报警返回原单（`duplicate=true`），不重复建单。
+2. 沿**可用通道**（`open` 状态的 passage）从污染区域做图遍历，找出所有可能波及的相邻区域。
+3. 按顺序执行步骤：**隔离通道**（block 受影响通道）→ **启动应急风机**（restore 停止/故障风机，运行中的跳过）→ **占用避险硐室**（容量满足人数的 available 硐室）→ **给失联人员派单**（为受影响区域内 missing 工人生成 rescue 任务并 assign）。
+4. 设备状态或容量不满足的步骤留在 `pending`（如风机故障、硐室容量不足），不回滚已完成步骤；修复后对同一联动单 `process`（`POST /api/entities/<id>/actions {"action":"process"}`）即可重试，已完成步骤跳过，不会重复占硐室或重复派单。
+5. 每步记录执行人（`executor`）和执行时间（`executed_at`），页面 `static/index.html` 逐步展示。
+
+关闭事件前，该事件的联动单必须 `completed` 或 `cancelled`，且所有通风设备恢复运行；事件没有联动单时仍按原流程关闭。联动单复用通用 `entities` 表，升级不丢历史数据。
+
 ## 规则重点
 
 - 活跃任务按 `dedupe_key` 防止重复派工。
 - 气体读数按阈值计算`severity`。
 - 事件关闭前必须没有失联或已定位人员、没有活跃任务，并且所有通风设备恢复运行。
+- 事件存在联动单时，关闭前联动单必须 `completed` 或 `cancelled`；无联动单的旧事件按原流程关闭。
+- 联动单按 `(事件, 污染区域)` 唯一；步骤顺序为隔离通道、启动风机、占用硐室、人员派单，失败步骤留 `pending` 且不回滚前序步骤。
 
 ## 测试
 
