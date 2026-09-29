@@ -73,6 +73,12 @@ def _validate_task(data, lookup):
             raise ConflictError("active task already exists for dedupe_key: " + str(key))
 
 
+def _validate_linkage(data, lookup):
+    incident = _find_one(lookup, "incident", "id", data.get("incident_id"))
+    if not incident or incident["status"] in ("closed",):
+        raise ValidationError("linkage requires an open incident")
+
+
 def _validate_offline(data):
     if not isinstance(data.get("payload"), dict):
         raise ValidationError("offline payload must be an object")
@@ -100,6 +106,14 @@ def _close_incident(actor, entity, data, lookup):
     active_tasks = [t for t in _all(lookup, "task") if t["status"] not in ("completed", "cancelled")]
     if active_tasks:
         raise ConflictError("cannot close incident while tasks remain active")
+    open_linkages = [
+        linkage
+        for linkage in _all(lookup, "linkage")
+        if linkage["data"].get("incident_id") == entity["id"]
+        and linkage["status"] not in ("completed", "cancelled")
+    ]
+    if open_linkages:
+        raise ConflictError("cannot close incident while linkage orders remain open")
     if [v for v in _all(lookup, "ventilation") if v["status"] != "running"]:
         raise ConflictError("cannot close incident until ventilation is restored")
     return {"closed_by": actor.user_id}
@@ -110,11 +124,12 @@ class RuleEngine:
         "workers": "worker", "sensors": "sensor", "ventilations": "ventilation",
         "passages": "passage", "refuges": "refuge", "incidents": "incident",
         "tasks": "task", "offline-records": "offline_record", "offline_records": "offline_record",
+        "linkages": "linkage",
     }
     INITIAL_STATUS = {
         "worker": "active", "sensor": "normal", "ventilation": "running",
         "passage": "open", "refuge": "available", "incident": "detected",
-        "task": "proposed", "offline_record": "merged",
+        "task": "proposed", "offline_record": "merged", "linkage": "active",
     }
     TRANSITIONS = {
         "worker": {
@@ -162,6 +177,11 @@ class RuleEngine:
             "complete": (("in_progress",), "completed"),
             "cancel": (("proposed", "assigned", "in_progress"), "cancelled"),
         },
+        "linkage": {
+            # execute 的下一状态由服务层按步骤完成情况决定（active 或 completed）
+            "execute": (("active",), "active"),
+            "cancel": (("active",), "cancelled"),
+        },
     }
     CREATE_REQUIRED = {
         "worker": ("name", "location_code", "team"),
@@ -172,6 +192,7 @@ class RuleEngine:
         "incident": ("area_code", "severity", "summary"),
         "task": ("incident_id", "task_type", "target", "dedupe_key"),
         "offline_record": ("source_id", "record_id", "recorded_at", "payload"),
+        "linkage": ("incident_id", "area_code"),
     }
     ACTION_REQUIRED = {
         ("worker", "rescue"): ("incident_id",),
@@ -181,6 +202,7 @@ class RuleEngine:
         ("incident", "close"): ("summary",),
         ("task", "complete"): ("result",),
         ("task", "cancel"): ("reason",),
+        ("linkage", "cancel"): ("reason",),
     }
     CREATE_ROLES = {
         "worker": ("admin", "safety", "dispatcher"),
@@ -191,6 +213,7 @@ class RuleEngine:
         "incident": ("admin", "safety", "dispatcher"),
         "task": ("admin", "dispatcher", "safety"),
         "offline_record": ("admin", "safety", "dispatcher", "field"),
+        "linkage": ("admin", "safety", "dispatcher"),
     }
     ROLE_ACTIONS = {
         "mark_missing": ("admin", "safety", "dispatcher"),
@@ -223,6 +246,7 @@ class RuleEngine:
         "accept": ("admin", "field", "dispatcher"),
         "complete": ("admin", "field", "dispatcher"),
         "cancel": ("admin", "dispatcher", "safety"),
+        "execute": ("admin", "safety", "dispatcher"),
     }
     CUSTOM_CREATE = {
         "worker": lambda a, d, l: _validate_worker(d),
@@ -233,6 +257,7 @@ class RuleEngine:
         "incident": lambda a, d, l: _validate_incident(d),
         "task": lambda a, d, l: _validate_task(d, l),
         "offline_record": lambda a, d, l: _validate_offline(d),
+        "linkage": lambda a, d, l: _validate_linkage(d, l),
     }
     CUSTOM_TRANSITIONS = {
         ("sensor", "raise_alarm"): _sensor_alarm,

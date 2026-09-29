@@ -1,11 +1,27 @@
 <!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>矿井应急避险与通风协调</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}main{max-width:860px;margin:auto}pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto}button{padding:.5rem .8rem;cursor:pointer}</style></head>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}main{max-width:960px;margin:auto}pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto}button{padding:.5rem .8rem;cursor:pointer}input,select{padding:.4rem}table{border-collapse:collapse;width:100%;margin:.5rem 0}td,th{border:1px solid #d1d5db;padding:.35rem .6rem;text-align:left;font-size:.9rem}.card{border:1px solid #d1d5db;border-radius:8px;padding:1rem;margin:1rem 0}.done{color:#047857}.pending{color:#b45309}.reason{color:#b91c1c;font-size:.85rem}</style></head>
 <body><main><h1>矿井应急避险与通风协调</h1><p>这是最小演示页面，主要操作通过JSON API完成。</p><p><button onclick="checkHealth()">检查服务状态</button></p><pre id="result">等待操作</pre>
+<h2>联动单</h2>
+<p>用户 <input id="user" value="dispatcher-1" size="10"> 角色 <select id="role"><option>dispatcher</option><option>admin</option><option>safety</option></select>
+事件ID <input id="incidentId" size="12"> 污染区域 <input id="areaCode" size="6">
+<button onclick="createLinkage()">创建联动单</button>
+<button onclick="loadLinkages()">刷新</button></p>
+<div id="linkages"></div>
 <h2>常用接口</h2><pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
 POST /api/entities/&lt;id&gt;/actions</pre></main>
-<script>async function checkHealth(){const r=await fetch('/health');document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<script>
+const STEP_NAMES={isolate_passages:'隔离通道',start_fans:'启动应急风机',occupy_refuges:'占用避险硐室',dispatch_tasks:'失联人员派单'};
+function headers(){return{'Content-Type':'application/json','X-User-Id':document.getElementById('user').value,'X-Role':document.getElementById('role').value}}
+async function checkHealth(){const r=await fetch('/health');document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2)}
+async function createLinkage(){const r=await fetch('/api/linkages',{method:'POST',headers:headers(),body:JSON.stringify({incident_id:document.getElementById('incidentId').value,area_code:document.getElementById('areaCode').value})});document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2);loadLinkages()}
+async function linkageAction(id,action,data){const r=await fetch('/api/entities/'+id+'/actions',{method:'POST',headers:headers(),body:JSON.stringify({action:action,data:data||{}})});document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2);loadLinkages()}
+async function cancelLinkage(id){const reason=prompt('取消原因');if(reason)linkageAction(id,'cancel',{reason:reason})}
+function stepRow(s){const cls=s.status==='done'?'done':'pending';const reason=s.detail&&s.detail.reason?'<div class="reason">'+s.detail.reason+'</div>':'';return'<tr><td>'+(STEP_NAMES[s.name]||s.name)+'</td><td class="'+cls+'">'+s.status+'</td><td>'+(s.executed_by||'-')+'</td><td>'+(s.executed_at||'-')+'</td><td>'+reason+'</td></tr>'}
+async function loadLinkages(){const r=await fetch('/api/linkages');const body=await r.json();const items=body.items||[];const host=document.getElementById('linkages');if(!items.length){host.innerHTML='<p>暂无联动单</p>';return}host.innerHTML=items.map(l=>{const d=l.data||{};const steps=(d.steps||[]).map(stepRow).join('');const acts=l.status==='active'?'<button onclick="linkageAction(\''+l.id+'\',\'execute\')">执行联动</button> <button onclick="cancelLinkage(\''+l.id+'\')">取消</button>':'';return'<div class="card"><b>'+l.id+'</b> 状态:'+l.status+' 事件:'+(d.incident_id||'')+' 污染区域:'+(d.area_code||'')+'<br>受影响区域:'+((d.affected_areas||[]).join(', ')||'-')+'<table><tr><th>步骤</th><th>状态</th><th>执行人</th><th>时间</th><th>说明</th></tr>'+steps+'</table>'+acts+'</div>'}).join('')}
+loadLinkages();
+</script></body></html>
